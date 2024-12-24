@@ -1,0 +1,15 @@
+services:
+  alchemy:
+    build:
+      context: .
+      args:
+        VAULT_PASSWORD: ${VAULT_PASSWORD}
+    volumes:
+      - .:/home/valiantlynx/ai-alchemy
+    ports:
+      - "8000:8000"
+    environment:
+      VAULT_PASSWORD: ${VAULT_PASSWORD}
+    stdin_open: true
+    tty: true
+    command: /bin/bash
