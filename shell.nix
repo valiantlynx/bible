@@ -19,6 +19,9 @@ pkgs.mkShell {
     pkgs.python3Packages.matplotlib
     pkgs.python3Packages.tqdm
     pkgs.python3Packages.lancedb
+    pkgs.python3Packages.langchain-core
+    pkgs.python3Packages.langchain-community
+    pkgs.python3Packages.langchain-ollama
     pkgs.jupyter
     pkgs.uv
     pkgs.libuv

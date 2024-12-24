@@ -6,33 +6,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "ai-alchemy"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "lance" },
-    { name = "lancedb" },
-    { name = "langchain" },
-    { name = "langchain-community" },
-    { name = "langchain-core" },
-    { name = "ollama" },
-    { name = "pandas" },
-    { name = "streamlit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "lance", specifier = ">=1.2.1" },
-    { name = "lancedb", specifier = ">=0.17.0" },
-    { name = "langchain", specifier = ">=0.3.11" },
-    { name = "langchain-community", specifier = ">=0.3.11" },
-    { name = "langchain-core", specifier = ">=0.3.24" },
-    { name = "ollama" },
-    { name = "pandas", specifier = ">=2.2.3" },
-    { name = "streamlit", specifier = ">=1.41.0" },
-]
-
-[[package]]
 name = "aiohappyeyeballs"
 version = "2.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -145,6 +118,35 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/fc/0f/aafca9af9315aee06a89ffde799a10a582fe8de76c563ee80bbcdc08b3fb/attrs-24.2.0.tar.gz", hash = "sha256:5cfb1b9148b5b086569baec03f20d7b6bf3bcacc9a42bebf87ffaaca362f6346", size = 792678 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/21/5b6702a7f963e95456c0de2d495f67bf5fd62840ac655dc451586d23d39a/attrs-24.2.0-py3-none-any.whl", hash = "sha256:81921eb96de3191c8258c199618104dd27ac608d9366f5e35d011eae1867ede2", size = 63001 },
+]
+
+[[package]]
+name = "bible"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "lance" },
+    { name = "lancedb" },
+    { name = "langchain" },
+    { name = "langchain-community" },
+    { name = "langchain-core" },
+    { name = "langchain-ollama" },
+    { name = "ollama" },
+    { name = "pandas" },
+    { name = "streamlit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lance", specifier = ">=1.2.1" },
+    { name = "lancedb", specifier = ">=0.17.0" },
+    { name = "langchain", specifier = ">=0.3.11" },
+    { name = "langchain-community", specifier = ">=0.3.11" },
+    { name = "langchain-core", specifier = ">=0.3.24" },
+    { name = "langchain-ollama", specifier = ">=0.2.1" },
+    { name = "ollama" },
+    { name = "pandas", specifier = ">=2.2.3" },
+    { name = "streamlit", specifier = ">=1.41.0" },
 ]
 
 [[package]]
@@ -561,6 +563,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2f/fc/8ccbaea3d6efa3aca973188f4d765024ecad618ab9eddd22bcc97761ada2/langchain_core-0.3.24.tar.gz", hash = "sha256:460851e8145327f70b70aad7dce2cdbd285e144d14af82b677256b941fc99656", size = 329650 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/eb/b5681dfa46a8f994d2b8d23610d8545ff80c6ad3fe6cabf76cea3256a8ea/langchain_core-0.3.24-py3-none-any.whl", hash = "sha256:97192552ef882a3dd6ae3b870a180a743801d0137a1159173f51ac555eeb7eec", size = 410643 },
+]
+
+[[package]]
+name = "langchain-ollama"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "ollama" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ed/37/f62b2344764b2aa8d1a59e9f2d07b5251ef501bce8069144c4fac2db931f/langchain_ollama-0.2.1.tar.gz", hash = "sha256:752b112d233a6e079259cb10138a5af836f42d26781cac6d7eb1b1e0d2ae9a0d", size = 12401 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/ed/85abb581c396a2627b9ebbed535ff73ccfda3edc336c77356de89e2a3dfc/langchain_ollama-0.2.1-py3-none-any.whl", hash = "sha256:033916150cc9c341d72274512b9987a0ebf014cf808237687012fc7af4a81ee3", size = 15673 },
 ]
 
 [[package]]
