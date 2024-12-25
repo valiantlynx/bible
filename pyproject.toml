@@ -14,4 +14,6 @@ dependencies = [
 	"lance>=1.2.1",
 	"streamlit>=1.41.0",
 	"langchain-ollama>=0.2.1",
+	"groq>=0.13.1",
+	"marimo>=0.10.7",
 ]
