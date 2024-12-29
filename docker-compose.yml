@@ -8,6 +8,7 @@ services:
       - .:/home/valiantlynx/ai-alchemy
     ports:
       - "8000:8000"
+      - "8501:8501"
     environment:
       VAULT_PASSWORD: ${VAULT_PASSWORD}
     stdin_open: true
