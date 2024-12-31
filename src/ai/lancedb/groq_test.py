@@ -50,97 +50,142 @@ def _(client):
 
 
 @app.cell
-def _(os, pd, sklearn):
+def _(pd):
+    bible_df = pd.read_csv("web.csv")
+    bible_df.head(15000)
+    return (bible_df,)
+
+
+@app.cell
+def _(bible_df):
+    # Create a concatenated string for each verse
+    bible_text_with_metadata = bible_df.apply(
+        lambda row: f"{row['Book Name']} {row['Chapter']}:{row['Verse']} - {row['Text']}",
+        axis=1
+    )
+
+    # Convert to a normal array of strings
+    bible_array = bible_text_with_metadata.tolist()[:1000]
+    bible_array
+    return bible_array, bible_text_with_metadata
+
+
+@app.cell
+def _(bible_array, os, pd):
+
     import requests
     import json
     import numpy as np
+    from sklearn.decomposition import PCA
 
     # URL and headers for API request
     url = "https://api.jina.ai/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ.get("JINA_API_KEY")}",
+        "Authorization": f"Bearer {os.environ.get('JINA_API_KEY')}",  # Fixed quoting issue
     }
 
-    print(headers)
-    # Input data with text samples for embedding
-    data = {
-        "model": "jina-embeddings-v3",
-        "task": "text-matching",
-        "late_chunking": False,
-        "dimensions": 1024,
-        "embedding_type": "float",
-        "input": [
-            "Organic skincare for sensitive skin with aloe vera and chamomile: Imagine the soothing embrace of nature with our organic skincare range, crafted specifically for sensitive skin. Infused with the calming properties of aloe vera and chamomile, each product provides gentle nourishment and protection. Say goodbye to irritation and hello to a glowing, healthy complexion.",
-            "Bio-Hautpflege für empfindliche Haut mit Aloe Vera und Kamille: Erleben Sie die wohltuende Wirkung unserer Bio-Hautpflege, speziell für empfindliche Haut entwickelt. Mit den beruhigenden Eigenschaften von Aloe Vera und Kamille pflegen und schützen unsere Produkte Ihre Haut auf natürliche Weise. Verabschieden Sie sich von Hautirritationen und genießen Sie einen strahlenden Teint.",
-            "Cuidado de la piel orgánico para piel sensible con aloe vera y manzanilla: Descubre el poder de la naturaleza con nuestra línea de cuidado de la piel orgánico, diseñada especialmente para pieles sensibles. Enriquecidos con aloe vera y manzanilla, estos productos ofrecen una hidratación y protección suave. Despídete de las irritaciones y saluda a una piel radiante y saludable.",
-            "针对敏感肌专门设计的天然有机护肤产品：体验由芦荟和洋甘菊提取物带来的自然呵护。我们的护肤产品特别为敏感肌设计，温和滋润，保护您的肌肤不受刺激。让您的肌肤告别不适，迎来健康光彩。",
-            "新しいメイクのトレンドは鮮やかな色と革新的な技術に焦点を当てています: 今シーズンのメイクアップトレンドは、大胆な色彩と革新的な技術に注目しています。ネオンアイライナーからホログラフィックハイライターまで、クリエイティビティを解き放ち、毎回ユニークなルックを演出しましょう。",
-            "llm_response",  # Add the actual response text here
-        ],
-    }
+    # Function to save progress
+    def save_progress(processed_indices, embeddings, progress_file="progress.json"):
+        with open(progress_file, "w") as f:
+            json.dump({
+                "processed_indices": list(processed_indices),  # Convert set to list for JSON
+                "embeddings": embeddings
+            }, f)
 
-    # Make the API request
-    response = requests.post(url, headers=headers, json=data)
+    # Function to load progress
+    def load_progress(progress_file="progress.json"):
+        if os.path.exists(progress_file):
+            with open(progress_file, "r") as f:
+                progress = json.load(f)
+            return set(progress["processed_indices"]), progress["embeddings"]  # Convert back to set
+        return set(), []
 
-    # Check the response status
-    if response.status_code != 200:
-        print(f"Error: {response.status_code}")
-    else:
-        # Parse the JSON response and extract embeddings
+    # Load previous progress
+    processed_indices, embeddings = load_progress()
+
+    # Embedding loop with tracking
+    batch_size = 5  # Adjust to fit context limits
+    for i in range(0, len(bible_array), batch_size):
+        batch = bible_array[i : i + batch_size]
+
+        # Skip already processed indices
+        if all(idx in processed_indices for idx in range(i, i + len(batch))):
+            continue
+
+        # Input data with text samples for embedding
+        data = {
+            "model": "jina-embeddings-v3",
+            "task": "text-matching",
+            "late_chunking": False,
+            "dimensions": 1024,
+            "embedding_type": "float",
+            "input": batch,
+        }
+
+        # Send request
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code != 200:
+            print(f"Error: {response.status_code}, Response: {response.text}")
+            break  # Exit loop on error (e.g., hitting API limit)
+
+        # Parse and store embeddings
         output = json.loads(response.text)["data"]
+        embeddings += [entry["embedding"] for entry in output]
 
-        # Extract the embedding data into a list of lists
-        embeddings_list = [entry["embedding"] for entry in output]
-        print(f"Embeddings extracted: {embeddings_list}")
+        # Update processed indices
+        processed_indices.update(range(i, i + len(batch)))
 
-        # Convert the list of embeddings into a numpy array (2D)
-        data_array = np.array(embeddings_list)
+        # Save progress
+        save_progress(processed_indices, embeddings)
 
-        # Print the shape of data_array to verify it's 2D (samples x features)
-        print(f"Shape of data_array: {data_array.shape}")
+        print(f"Processed batch {i} to {i + len(batch)}")
 
-        # Apply PCA for dimensionality reduction (reduce to 2D)
-        pca = sklearn.decomposition.PCA(n_components=2, whiten=True)
-        pca_result = pca.fit_transform(data_array)
+    # Convert the list of embeddings into a numpy array (2D)
+    embeddings_array = np.array(embeddings)
 
-        # Print the PCA results
-        print(f"PCA Result: {pca_result}")
+    # Print the shape of embeddings_array to verify it's 2D (samples x features)
+    print(f"Shape of embeddings_array: {embeddings_array.shape}")
 
-        embedding_plot = pd.DataFrame(
-            {
-                "x": pca_result[:, 0],
-                "y": pca_result[:, 1],
-                "text": [entry for entry in data["input"]],
-            }
-        ).reset_index()
+    # Apply PCA for dimensionality reduction (reduce to 2D)
+    pca = PCA(n_components=2, whiten=True)
+    pca_result = pca.fit_transform(embeddings_array)
 
-    embedding_plot
+    # Print the PCA results
+    print(f"PCA Result: {pca_result}")
+
+    embedding_plot = pd.DataFrame(
+        {
+            "x": pca_result[:, 0],
+            "y": pca_result[:, 1],
+            "text": bible_array,
+        }
+    ).reset_index()
+
+    print(embedding_plot)
+
     return (
+        PCA,
+        batch,
+        batch_size,
         data,
-        data_array,
         embedding_plot,
-        embeddings_list,
+        embeddings,
+        embeddings_array,
         headers,
+        i,
         json,
+        load_progress,
         np,
         output,
         pca,
         pca_result,
+        processed_indices,
         requests,
         response,
+        save_progress,
         url,
     )
-
-
-@app.cell
-def _():
-    import sklearn
-    import sklearn.datasets
-    import sklearn.manifold
-
-    raw_digits, raw_labels = sklearn.datasets.load_digits(return_X_y=True)
-    return raw_digits, raw_labels, sklearn
 
 
 @app.cell(hide_code=True)
@@ -211,13 +256,14 @@ def _(chart, mo, raw_digits, table):
 @app.cell
 def _(alt):
     def scatter(df):
+        print(df)
         return (
             alt.Chart(df)
             .mark_circle()
             .encode(
                 x=alt.X("x:Q").scale(domain=(-2.5, 2.5)),
                 y=alt.Y("y:Q").scale(domain=(-2.5, 2.5)),
-                color=alt.Color("digit:N"),
+                color=alt.Color("text:N"),
             )
             .properties(width=500, height=500)
         )
