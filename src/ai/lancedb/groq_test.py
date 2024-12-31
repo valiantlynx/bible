@@ -4,6 +4,12 @@ __generated_with = "0.10.8"
 app = marimo.App(width="full")
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""# Embedding Visualizer""")
+    return
+
+
 @app.cell
 def _():
     import os
@@ -13,7 +19,7 @@ def _():
     import pandas as pd
 
     load_dotenv(
-        "/home/valiantlynx/Desktop/bible/src/ai/lancedb/.env"
+        "/Users/gormery/Desktop/projects/bible/src/ai/lancedb/.env"
     )  # take environment variables from .env
     return Groq, load_dotenv, mo, os, pd
 
@@ -44,7 +50,7 @@ def _(client):
 
 
 @app.cell
-def _(pd, sklearn):
+def _(os, pd, sklearn):
     import requests
     import json
     import numpy as np
@@ -53,9 +59,10 @@ def _(pd, sklearn):
     url = "https://api.jina.ai/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer some api key",
+        "Authorization": f"Bearer {os.environ.get("JINA_API_KEY")}",
     }
 
+    print(headers)
     # Input data with text samples for embedding
     data = {
         "model": "jina-embeddings-v3",
@@ -109,7 +116,6 @@ def _(pd, sklearn):
         ).reset_index()
 
     embedding_plot
-
     return (
         data,
         data_array,
@@ -127,12 +133,6 @@ def _(pd, sklearn):
     )
 
 
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""# Embedding Visualizer""")
-    return
-
-
 @app.cell
 def _():
     import sklearn
@@ -147,9 +147,8 @@ def _():
 def _(mo):
     mo.md(
         f"""
-        Here's a PCA **embedding of numerical digits**: each point represents a
-        digit, with similar digits close to each other. The data is from the UCI
-        ML handwritten digits dataset.
+        Here's a PCA **embedding of some texts**: each point represents a
+        text, with similar texts close to each other. The data is from the hard coded data. im thinking of indexing the entire bible.
 
         This notebook will automatically drill down into points you **select with
         your mouse**; try it!
@@ -210,18 +209,6 @@ def _(chart, mo, raw_digits, table):
 
 
 @app.cell
-def _(pd, raw_digits, raw_labels, sklearn):
-    X_embedded = sklearn.decomposition.PCA(n_components=2, whiten=True).fit_transform(
-        raw_digits
-    )
-
-    embedding = pd.DataFrame(
-        {"x": X_embedded[:, 0], "y": X_embedded[:, 1], "digit": raw_labels}
-    ).reset_index()
-    return X_embedded, embedding
-
-
-@app.cell
 def _(alt):
     def scatter(df):
         return (
@@ -234,7 +221,6 @@ def _(alt):
             )
             .properties(width=500, height=500)
         )
-
     return (scatter,)
 
 
@@ -248,7 +234,6 @@ async def _():
         await micropip.install("altair")
 
     import altair as alt
-
     return alt, micropip, sys
 
 
