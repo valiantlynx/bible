@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.10.8"
+__generated_with = "0.10.9"
 app = marimo.App(width="full")
 
 
@@ -16,12 +16,11 @@ def _():
     from groq import Groq
     from dotenv import load_dotenv
     import marimo as mo
-    import pandas as pd
 
     load_dotenv(
         "/Users/gormery/Desktop/projects/bible/src/ai/lancedb/.env"
     )  # take environment variables from .env
-    return Groq, load_dotenv, mo, os, pd
+    return Groq, load_dotenv, mo, os
 
 
 @app.cell
@@ -30,6 +29,7 @@ def _(Groq, os):
         # This is the default and can be omitted
         api_key=os.environ.get("GROQ_API_KEY"),
     )
+    os.environ.get("GROQ_API_KEY")
     return (client,)
 
 
@@ -50,141 +50,269 @@ def _(client):
 
 
 @app.cell
-def _(pd):
-    bible_df = pd.read_csv("web.csv")
-    bible_df.head(15000)
-    return (bible_df,)
-
-
-@app.cell
-def _(bible_df):
-    # Create a concatenated string for each verse
-    bible_text_with_metadata = bible_df.apply(
-        lambda row: f"{row['Book Name']} {row['Chapter']}:{row['Verse']} - {row['Text']}",
-        axis=1
-    )
-
-    # Convert to a normal array of strings
-    bible_array = bible_text_with_metadata.tolist()[:1000]
-    bible_array
-    return bible_array, bible_text_with_metadata
-
-
-@app.cell
-def _(bible_array, os, pd):
-
+def _(os):
     import requests
     import json
     import numpy as np
+    import pandas as pd
     from sklearn.decomposition import PCA
+
+    # Load the Bible data
+    bible_df = pd.read_csv("web.csv")
+    print(bible_df.head())
+
+    # Ensure all values in the Text column are strings
+    bible_df['Text'] = bible_df['Text'].fillna("").astype(str)
+
+    # Prepare concatenated text for chapters and books
+    def prepare_hierarchical_text(df):
+        # Chapter-level concatenation
+        chapter_texts = (
+            df.groupby(["Book Name", "Chapter"])["Text"]
+            .apply(lambda texts: " ".join(texts))
+            .reset_index()
+            .rename(columns={"Text": "Chapter Text"})
+        )
+
+        # Book-level concatenation
+        book_texts = (
+            chapter_texts.groupby(["Book Name"])["Chapter Text"]
+            .apply(lambda texts: " ".join(texts))
+            .reset_index()
+            .rename(columns={"Chapter Text": "Book Text"})
+        )
+
+        return chapter_texts, book_texts
+
+    chapter_texts, book_texts = prepare_hierarchical_text(bible_df)
+
+    # Chunking function with token validation
+    def chunk_text(text, max_length=1000):
+        words = text.split()
+        chunks = [" ".join(words[i:i + max_length]) for i in range(0, len(words), max_length)]
+        return chunks
+
+    # Validate and adjust chunks
+    def validate_chunks(chunks, max_tokens=8194):
+        validated_chunks = []
+        for chunk in chunks:
+            if len(chunk.split()) > max_tokens:
+                validated_chunks.extend(chunk_text(chunk, max_length=max_tokens - 200))
+            else:
+                validated_chunks.append(chunk)
+        return validated_chunks
+
+    # Prepare chunked data with validation
+    def prepare_chunked_data(data, metadata=None, max_length=1000):
+        chunked_data = []
+        chunked_metadata = []
+
+        for idx, text in enumerate(data):
+            chunks = chunk_text(text, max_length)
+            validated_chunks = validate_chunks(chunks)
+            chunked_data.extend(validated_chunks)
+
+            # Add metadata for each chunk
+            if metadata:
+                chunked_metadata.extend(
+                    [f"{metadata[idx]} - Part {i + 1}" for i in range(len(validated_chunks))]
+                )
+            else:
+                chunked_metadata.extend([f"Chunk {idx + 1}" for _ in range(len(validated_chunks))])
+
+        return chunked_data, chunked_metadata
+
+    # Prepare data for embedding with chunking and validation
+    verse_data_chunks, verse_metadata = prepare_chunked_data(
+        bible_df.apply(
+            lambda row: f"{row['Book Name']} {row['Chapter']}:{row['Verse']} - {row['Text']}",
+            axis=1
+        ).tolist()[:20]
+    )
+
+    chapter_data_chunks, chapter_metadata = prepare_chunked_data(
+        chapter_texts.apply(
+            lambda row: f"{row['Book Name']} Chapter {row['Chapter']} - {row['Chapter Text']}",
+            axis=1
+        ).tolist()[:20]
+    )
+
+    book_data_chunks, book_metadata = prepare_chunked_data(
+        book_texts.apply(
+            lambda row: f"{row['Book Name']} Overview - {row['Book Text']}",
+            axis=1
+        ).tolist()[:2],
+        metadata=book_texts["Book Name"].tolist()[:2]
+    )
+
+    # Combine all data into a single dictionary for processing
+    hierarchical_data = {
+        "verse": verse_data_chunks,
+        "chapter": chapter_data_chunks,
+        "book": book_data_chunks
+    }
+
+    hierarchical_metadata = {
+        "verse": verse_metadata,
+        "chapter": chapter_metadata,
+        "book": book_metadata
+    }
 
     # URL and headers for API request
     url = "https://api.jina.ai/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ.get('JINA_API_KEY')}",  # Fixed quoting issue
+        "Authorization": f"Bearer {os.environ.get('JINA_API_KEY')}",
     }
 
     # Function to save progress
-    def save_progress(processed_indices, embeddings, progress_file="progress.json"):
-        with open(progress_file, "w") as f:
-            json.dump({
-                "processed_indices": list(processed_indices),  # Convert set to list for JSON
-                "embeddings": embeddings
-            }, f)
-
-    # Function to load progress
-    def load_progress(progress_file="progress.json"):
+    def save_progress(level, processed_indices, embeddings, progress_file="progress.json"):
         if os.path.exists(progress_file):
             with open(progress_file, "r") as f:
                 progress = json.load(f)
-            return set(progress["processed_indices"]), progress["embeddings"]  # Convert back to set
+        else:
+            progress = {}
+
+        progress[level] = {
+            "processed_indices": list(processed_indices),
+            "embeddings": embeddings
+        }
+
+        with open(progress_file, "w") as f:
+            json.dump(progress, f)
+
+    # Function to load progress
+    def load_progress(level, progress_file="progress.json"):
+        if os.path.exists(progress_file):
+            with open(progress_file, "r") as f:
+                progress = json.load(f)
+            if level in progress:
+                return set(progress[level]["processed_indices"]), progress[level]["embeddings"]
         return set(), []
 
-    # Load previous progress
-    processed_indices, embeddings = load_progress()
+    # Process each hierarchy level
+    all_embeddings = {}
 
-    # Embedding loop with tracking
-    batch_size = 5  # Adjust to fit context limits
-    for i in range(0, len(bible_array), batch_size):
-        batch = bible_array[i : i + batch_size]
+    for level, data in hierarchical_data.items():
+        print(f"Processing level: {level}")
 
-        # Skip already processed indices
-        if all(idx in processed_indices for idx in range(i, i + len(batch))):
-            continue
+        # Load progress for the current level
+        processed_indices, embeddings = load_progress(level)
 
-        # Input data with text samples for embedding
-        data = {
-            "model": "jina-embeddings-v3",
-            "task": "text-matching",
-            "late_chunking": False,
-            "dimensions": 1024,
-            "embedding_type": "float",
-            "input": batch,
-        }
+        # Embedding loop with tracking
+        batch_size = 5  # Adjust to fit context limits
+        for i in range(0, len(data), batch_size):
+            batch = data[i : i + batch_size]
 
-        # Send request
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code != 200:
-            print(f"Error: {response.status_code}, Response: {response.text}")
-            break  # Exit loop on error (e.g., hitting API limit)
+            # Skip already processed indices
+            if all(idx in processed_indices for idx in range(i, i + len(batch))):
+                continue
 
-        # Parse and store embeddings
-        output = json.loads(response.text)["data"]
-        embeddings += [entry["embedding"] for entry in output]
+            # Input data with text samples for embedding
+            request_data = {
+                "model": "jina-embeddings-v3",
+                "task": "text-matching",
+                "late_chunking": False,
+                "dimensions": 1024,
+                "embedding_type": "float",
+                "input": batch,
+            }
 
-        # Update processed indices
-        processed_indices.update(range(i, i + len(batch)))
+            # Send request
+            response = requests.post(url, headers=headers, json=request_data)
+            if response.status_code != 200:
+                print(f"Error: {response.status_code}, Response: {response.text}")
+                continue  # Skip to the next batch instead of breaking
 
-        # Save progress
-        save_progress(processed_indices, embeddings)
+            # Parse and store embeddings
+            output = json.loads(response.text)["data"]
+            embeddings += [entry["embedding"] for entry in output]
 
-        print(f"Processed batch {i} to {i + len(batch)}")
+            # Update processed indices
+            processed_indices.update(range(i, i + len(batch)))
 
-    # Convert the list of embeddings into a numpy array (2D)
-    embeddings_array = np.array(embeddings)
+            # Save progress
+            save_progress(level, processed_indices, embeddings)
 
-    # Print the shape of embeddings_array to verify it's 2D (samples x features)
-    print(f"Shape of embeddings_array: {embeddings_array.shape}")
+            print(f"Processed {level} batch {i} to {i + len(batch)}")
 
-    # Apply PCA for dimensionality reduction (reduce to 2D)
-    pca = PCA(n_components=2, whiten=True)
-    pca_result = pca.fit_transform(embeddings_array)
+        # Store embeddings for this level
+        all_embeddings[level] = {"embeddings": embeddings, "texts": hierarchical_metadata[level]}
 
-    # Print the PCA results
-    print(f"PCA Result: {pca_result}")
+    # Convert embeddings to numpy arrays for visualization
+    for level, embedding_data in all_embeddings.items():
+        print(embedding_data)
+        embeddings = embedding_data["embeddings"]
+        texts = embedding_data["texts"]
 
-    embedding_plot = pd.DataFrame(
-        {
-            "x": pca_result[:, 0],
-            "y": pca_result[:, 1],
-            "text": bible_array,
-        }
-    ).reset_index()
+        # Ensure alignment of embeddings and texts
+        assert len(embeddings) == len(texts), f"Mismatch in {level}: {len(embeddings)} embeddings vs {len(texts)} texts."
 
-    print(embedding_plot)
+        embeddings_array = np.array(embeddings)
+        print(f"{level.capitalize()} embeddings shape: {embeddings_array.shape}")
+
+        # Apply PCA for dimensionality reduction
+        try:
+            pca = PCA(n_components=2, whiten=True)
+            pca_result = pca.fit_transform(embeddings_array)
+
+            # Create a DataFrame for visualization
+            embedding_plot = pd.DataFrame(
+                {
+                    "x": pca_result[:, 0],
+                    "y": pca_result[:, 1],
+                    "text": texts,
+                }
+            ).reset_index()
+
+            print(f"{level.capitalize()} Embedding Plot:")
+            print(embedding_plot[:5])
+
+        except ValueError as e:
+            print(f"Error processing PCA for level {level}: {e}")
 
     return (
         PCA,
+        all_embeddings,
         batch,
         batch_size,
+        bible_df,
+        book_data_chunks,
+        book_metadata,
+        book_texts,
+        chapter_data_chunks,
+        chapter_metadata,
+        chapter_texts,
+        chunk_text,
         data,
+        embedding_data,
         embedding_plot,
         embeddings,
         embeddings_array,
         headers,
+        hierarchical_data,
+        hierarchical_metadata,
         i,
         json,
+        level,
         load_progress,
         np,
         output,
         pca,
         pca_result,
+        pd,
+        prepare_chunked_data,
+        prepare_hierarchical_text,
         processed_indices,
+        request_data,
         requests,
         response,
         save_progress,
+        texts,
         url,
+        validate_chunks,
+        verse_data_chunks,
+        verse_metadata,
     )
 
 
@@ -208,7 +336,7 @@ def _(chart, mo):
     return (table,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(chart, mo, raw_digits, table):
     # show 10 images: either the first 10 from the selection, or the first ten
     # selected in the table
