@@ -7,3 +7,5 @@ venv/
 *.ipynb_checkpoints/
 src/ai/lancedb/data
 .env
+dist/
+.DS_Store
