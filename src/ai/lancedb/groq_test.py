@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.10.8"
+__generated_with = "0.10.9"
 app = marimo.App(width="full")
 
 
@@ -16,12 +16,11 @@ def _():
     from groq import Groq
     from dotenv import load_dotenv
     import marimo as mo
-    import pandas as pd
 
     load_dotenv(
         "/Users/gormery/Desktop/projects/bible/src/ai/lancedb/.env"
     )  # take environment variables from .env
-    return Groq, load_dotenv, mo, os, pd
+    return Groq, load_dotenv, mo, os
 
 
 @app.cell
@@ -45,155 +44,184 @@ def _(client):
         model="llama3-8b-8192",
     )
     llm_response = chat_completion.choices[0].message.content
-    print(llm_response)
+    llm_response
     return chat_completion, llm_response
 
 
 @app.cell
-def _(pd):
-    bible_df = pd.read_csv("web.csv")
-    bible_df.head(15000)
-    return (bible_df,)
+def _(os):
+    import pandas as pd
+    import lancedb
+    from lancedb.pydantic import LanceModel, Vector
+    import requests
+    import numpy as np
+    from sklearn.decomposition import PCA
 
+    # Load Bible data with explicit column names, skipping the header row
+    bible_df = pd.read_csv(
+        "web.csv",
+        names=["Verse ID", "Book Name", "Book Number", "Chapter", "Verse", "Text"],
+        skiprows=1  # Skip the header row since column names are explicitly defined
+    )
 
-@app.cell
-def _(bible_df):
-    # Create a concatenated string for each verse
-    bible_text_with_metadata = bible_df.apply(
+    # Ensure correct data types
+    bible_df["Verse ID"] = bible_df["Verse ID"].astype(int)
+    bible_df["Book Number"] = bible_df["Book Number"].astype(int)
+    bible_df["Chapter"] = bible_df["Chapter"].astype(int)
+    bible_df["Verse"] = bible_df["Verse"].astype(int)
+
+    # Create concatenated metadata text
+    bible_df["full_text"] = bible_df.apply(
         lambda row: f"{row['Book Name']} {row['Chapter']}:{row['Verse']} - {row['Text']}",
         axis=1
     )
 
-    # Convert to a normal array of strings
-    bible_array = bible_text_with_metadata.tolist()[:1000]
-    bible_array
-    return bible_array, bible_text_with_metadata
+    # LanceDB setup
+    db_path = "bible_lancedb"
+    db = lancedb.connect(db_path)
 
+    # Define LanceDB schema for embeddings
+    class BibleSchema(LanceModel):
+        verse_id: int
+        book_name: str
+        chapter: int
+        verse: int
+        text: str
+        embedding: Vector(1024)  # Assuming 1024 dimensions from Jina model
 
-@app.cell
-def _(bible_array, os, pd):
+    # Create or open the LanceDB table
+    table = db.create_table("bible_embeddings", schema=BibleSchema, exist_ok=True)
 
-    import requests
-    import json
-    import numpy as np
-    from sklearn.decomposition import PCA
+    # Function to get unembedded rows
+    def get_unembedded_rows(df, table):
+        # Extract existing IDs from LanceDB
+        existing_ids = {row.verse_id for row in table.to_pandas().itertuples()}
+        # Filter the DataFrame to exclude already embedded rows
+        return df[~df["Verse ID"].isin(existing_ids)]
 
-    # URL and headers for API request
+    # Filter unembedded rows
+    unembedded_df = get_unembedded_rows(bible_df, table)
+
+    # Jina API setup
     url = "https://api.jina.ai/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ.get('JINA_API_KEY')}",  # Fixed quoting issue
+        "Authorization": f"Bearer {os.environ.get('JINA_API_KEY')}",
     }
 
-    # Function to save progress
-    def save_progress(processed_indices, embeddings, progress_file="progress.json"):
-        with open(progress_file, "w") as f:
-            json.dump({
-                "processed_indices": list(processed_indices),  # Convert set to list for JSON
-                "embeddings": embeddings
-            }, f)
-
-    # Function to load progress
-    def load_progress(progress_file="progress.json"):
-        if os.path.exists(progress_file):
-            with open(progress_file, "r") as f:
-                progress = json.load(f)
-            return set(progress["processed_indices"]), progress["embeddings"]  # Convert back to set
-        return set(), []
-
-    # Load previous progress
-    processed_indices, embeddings = load_progress()
-
     # Embedding loop with tracking
-    batch_size = 5  # Adjust to fit context limits
-    for i in range(0, len(bible_array), batch_size):
-        batch = bible_array[i : i + batch_size]
+    batch_size = 5
+    for i in range(0, len(unembedded_df), batch_size):
+        batch = unembedded_df.iloc[i : i + batch_size]
+        texts = batch["full_text"].tolist()
 
-        # Skip already processed indices
-        if all(idx in processed_indices for idx in range(i, i + len(batch))):
-            continue
-
-        # Input data with text samples for embedding
+        # Prepare API request payload
         data = {
             "model": "jina-embeddings-v3",
             "task": "text-matching",
             "late_chunking": False,
             "dimensions": 1024,
             "embedding_type": "float",
-            "input": batch,
+            "input": texts,
         }
 
-        # Send request
+        # Send request to Jina API
         response = requests.post(url, headers=headers, json=data)
         if response.status_code != 200:
             print(f"Error: {response.status_code}, Response: {response.text}")
-            break  # Exit loop on error (e.g., hitting API limit)
+            break
 
-        # Parse and store embeddings
-        output = json.loads(response.text)["data"]
-        embeddings += [entry["embedding"] for entry in output]
+        # Parse embeddings
+        output = response.json().get("data", [])
+        embeddings = [entry["embedding"] for entry in output]
 
-        # Update processed indices
-        processed_indices.update(range(i, i + len(batch)))
+        # Check for response consistency
+        if len(embeddings) != len(batch):
+            print(f"Warning: Mismatched response. Expected {len(batch)}, got {len(embeddings)}")
+            print(f"Batch texts: {texts}")
+            print(f"API response: {response.text}")
+            continue  # Skip this batch if there's a mismatch
 
-        # Save progress
-        save_progress(processed_indices, embeddings)
+        # Prepare rows for LanceDB
+        rows = [
+            {
+                "verse_id": int(row["Verse ID"]),
+                "book_name": row["Book Name"],
+                "chapter": int(row["Chapter"]),
+                "verse": int(row["Verse"]),
+                "text": row["Text"],
+                "embedding": embeddings[idx],
+            }
+            for idx, (_, row) in enumerate(batch.iterrows())  # Use enumerate for explicit indexing
+        ]
 
-        print(f"Processed batch {i} to {i + len(batch)}")
+        # Insert embeddings into LanceDB if rows are valid
+        if rows:
+            table.add(rows)
+            print(f"Inserted {len(rows)} rows into LanceDB.")
+        else:
+            print(f"No rows added for batch starting at index {i}.")
 
-    # Convert the list of embeddings into a numpy array (2D)
-    embeddings_array = np.array(embeddings)
+    # Verify LanceDB contents
+    print(f"Total rows in LanceDB: {len(table)}")
 
-    # Print the shape of embeddings_array to verify it's 2D (samples x features)
-    print(f"Shape of embeddings_array: {embeddings_array.shape}")
+    # Query LanceDB for embeddings
+    all_embeddings = np.array([row.embedding for row in table.to_pandas().itertuples()])
+    print(f"Embeddings shape: {all_embeddings.shape}")
 
-    # Apply PCA for dimensionality reduction (reduce to 2D)
+    # PCA for dimensionality reduction
     pca = PCA(n_components=2, whiten=True)
-    pca_result = pca.fit_transform(embeddings_array)
+    pca_result = pca.fit_transform(all_embeddings)
 
-    # Print the PCA results
-    print(f"PCA Result: {pca_result}")
-
+    # Visualization data
     embedding_plot = pd.DataFrame(
         {
             "x": pca_result[:, 0],
             "y": pca_result[:, 1],
-            "text": bible_array,
+            "text": [row.text for row in table.to_pandas().itertuples()],
         }
-    ).reset_index()
-
+    )
     print(embedding_plot)
 
     return (
+        BibleSchema,
+        LanceModel,
         PCA,
+        Vector,
+        all_embeddings,
         batch,
         batch_size,
+        bible_df,
         data,
+        db,
+        db_path,
         embedding_plot,
         embeddings,
-        embeddings_array,
+        get_unembedded_rows,
         headers,
         i,
-        json,
-        load_progress,
+        lancedb,
         np,
         output,
         pca,
         pca_result,
-        processed_indices,
+        pd,
         requests,
         response,
-        save_progress,
+        rows,
+        table,
+        texts,
+        unembedded_df,
         url,
     )
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(mo):
     mo.md(
         f"""
-        Here's a PCA **embedding of some texts**: each point represents a
-        text, with similar texts close to each other. The data is from the hard coded data. im thinking of indexing the entire bible.
+        Here's a PCA **embedding of bible verses**: each point represents a
+        verse, with similar verses close to each other. The data is from the csv dataset. im thinking of indexing the entire bible.
 
         This notebook will automatically drill down into points you **select with
         your mouse**; try it!
@@ -203,15 +231,9 @@ def _(mo):
 
 
 @app.cell
-def _(chart, mo):
-    table = mo.ui.table(chart.value)
-    return (table,)
-
-
-@app.cell
-def _(chart, mo, raw_digits, table):
+def _(chart, mo, raw_digits, table_ui):
     # show 10 images: either the first 10 from the selection, or the first ten
-    # selected in the table
+    # selected in the table_ui
     mo.stop(not len(chart.value))
 
     def show_images(indices, max_images=10):
@@ -235,8 +257,8 @@ def _(chart, mo, raw_digits, table):
 
     selected_images = (
         show_images(list(chart.value["index"]))
-        if not len(table.value)
-        else show_images(list(table.value["index"]))
+        if not len(table_ui.value)
+        else show_images(list(table_ui.value["index"]))
     )
 
     mo.md(
@@ -247,10 +269,16 @@ def _(chart, mo, raw_digits, table):
 
         Here's all the data you've selected.
 
-        {table}
+        {table_ui}
         """
     )
     return selected_images, show_images
+
+
+@app.cell
+def _(chart, mo):
+    table_ui = mo.ui.table(chart.value)
+    return (table_ui,)
 
 
 @app.cell
