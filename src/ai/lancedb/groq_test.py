@@ -198,7 +198,7 @@ def _(os):
             "full_text": [row.full_text for row in table.to_pandas().itertuples()],
         }
     )
-    print(embedding_plot)
+    embedding_plot
     return (
         BibleSchema,
         JINA_API_KEY,
@@ -259,51 +259,6 @@ def _(mo):
 
 
 @app.cell
-def _(chart, mo, raw_digits, table_ui):
-    # show 10 images: either the first 10 from the selection, or the first ten
-    # selected in the table_ui
-    mo.stop(not len(chart.value))
-
-    def show_images(indices, max_images=10):
-        import matplotlib.pyplot as plt
-
-        indices = indices[:max_images]
-        images = raw_digits.reshape((-1, 8, 8))[indices]
-        fig, axes = plt.subplots(1, len(indices))
-        fig.set_size_inches(12.5, 1.5)
-        if len(indices) > 1:
-            for im, ax in zip(images, axes.flat):
-                ax.imshow(im, cmap="gray")
-                ax.set_yticks([])
-                ax.set_xticks([])
-        else:
-            axes.imshow(images[0], cmap="gray")
-            axes.set_yticks([])
-            axes.set_xticks([])
-        plt.tight_layout()
-        return fig
-
-    selected_images = (
-        show_images(list(chart.value["index"]))
-        if not len(table_ui.value)
-        else show_images(list(table_ui.value["index"]))
-    )
-
-    mo.md(
-        f"""
-        **Here's a preview of the images you've selected**:
-
-        {mo.as_html(selected_images)}
-
-        Here's all the data you've selected.
-
-        {table_ui}
-        """
-    )
-    return selected_images, show_images
-
-
-@app.cell
 def _(chart, mo):
     table_ui = mo.ui.table(chart.value)
     return (table_ui,)
@@ -317,8 +272,8 @@ def _(alt):
             alt.Chart(df)
             .mark_circle()
             .encode(
-                x=alt.X("x:Q").scale(domain=(-2.5, 2.5)),
-                y=alt.Y("y:Q").scale(domain=(-2.5, 2.5)),
+                x=alt.X("x:Q").scale(),
+                y=alt.Y("y:Q").scale(),
                 color=alt.Color("full_text:N"),
             )
             .properties(width=500, height=500)
