@@ -20,8 +20,8 @@ def _(mo):
 def _(mo):
     mo.accordion({
         "How is this app implemented?": """
-        - Your Bible is tokenized into chunks, which are embedded using
-        jina embeddings
+        - The bible is tokenized into chunks, which are embedded using
+        Jina's `jina-embeddings-v3`.
         - Your question is embedded using the same model.
         - We use an approximate k-nearest neighbor search on the PDF embeddings to
         retrieve relevant chunks.
@@ -153,76 +153,7 @@ def _(BibleSchema, SYSTEM, bible_table, client, mo):
 
 
 @app.cell
-def _(BibleSchema, SYSTEM, bible_table, client, mo, user_question):
-    mo.md(
-        f"""
-        We can also stream but i was not able to put it in marimo chat ui
-        """
-    )
-    if not user_question.value or not bible_table:
-        mo.md("No question provided or bible_table is empty.")
-
-    # Helper function to extract and sort context
-    def extract_context(rows):
-        """Extract and sort context from the database rows."""
-        return sorted(
-            [{"full_text": r.full_text, "verse_id": r.verse_id} for r in rows],
-            key=lambda x: x["verse_id"],
-        )
-
-    # Query the table for the context
-    rows = bible_table.search(user_question.value).limit(100).to_pydantic(BibleSchema)
-    context = extract_context(rows)
-
-    if not context:
-        mo.md("No relevant context found in the database.")
-
-    # Create a chat completion request with streaming enabled
-    stream = client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Context: {context}"},
-            {"role": "user", "content": f"Question: {user_question.value}"},
-        ],
-        model="llama3-8b-8192",
-        stream=True,  # Enable streaming
-    )
-
-    # Stream and collect the response chunk by chunk
-    print("**Groq Model Response:**\n")
-    response_text = ""
-    for chunk in stream:
-        if hasattr(chunk, "choices") and chunk.choices:
-            for choice in chunk.choices:
-                if choice.delta and choice.delta.content:
-                    print(choice.delta.content, end="", flush=True)
-                    response_text += choice.delta.content
-
-    print("\n\n**Response streaming complete.**")
-    mo.md(response_text)
-    return (
-        choice,
-        chunk,
-        context,
-        extract_context,
-        response_text,
-        rows,
-        stream,
-    )
-
-
-@app.cell
-def _(mo):
-    # Integration with Marimo UI
-    user_question = mo.ui.text_area(
-        placeholder="💬 Ask your question about the Bible..."
-    ).form()
-    user_question
-    return (user_question,)
-
-
-@app.cell
-def _(os):
+def _(mo, os):
     import pandas as pd
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
@@ -339,6 +270,12 @@ def _(os):
     final_rows = bible_table.to_pandas()
     print(f"Final rows in the database: {len(final_rows)}")
     print(f"Newly embedded rows: {len(final_rows) - len(existing_rows)}")
+
+    mo.md(
+        f"""
+        This is the code for getting the datasett making embeddings out of all of them and saving them  to lacedb. ready to be used for quering
+        """
+    )
     return (
         BibleSchema,
         EMBEDDING_DIM,
@@ -372,7 +309,7 @@ def _(os):
 
 
 @app.cell
-def _(bible_table, pd):
+def _(bible_table, mo, pd):
     import numpy as np
     from sklearn.decomposition import PCA
 
@@ -392,7 +329,12 @@ def _(bible_table, pd):
             "full_text": [row.full_text for row in bible_table.to_pandas().itertuples()],
         }
     )
-    embedding_plot
+
+    mo.md(
+        f"""
+        Now to visualize the embedding we can use many thing. for example below we used PCA
+        """
+    )
     return PCA, all_embeddings, embedding_plot, np, pca, pca_result
 
 
@@ -400,9 +342,10 @@ def _(bible_table, pd):
 def _(bible_table, mo):
     # Fetch all data from LanceDB and convert to a DataFrame
     db_data = bible_table.to_pandas()
-    mo.md(f"**Total Rows in LanceDB: {len(db_data)}**")
-    mo.ui.table(db_data)
-    return (db_data,)
+
+    stuff_to_accord = mo.hstack([mo.ui.table(db_data)])
+    mo.accordion({f"**This is how the data is like in the lancedb: total length: {len(db_data)} rows**": stuff_to_accord})
+    return db_data, stuff_to_accord
 
 
 @app.cell
@@ -428,7 +371,6 @@ def _(chart, mo):
 @app.cell
 def _(alt):
     def scatter(df):
-        print(df)
         return (
             alt.Chart(df)
             .mark_circle()
@@ -460,74 +402,6 @@ def _(embedding_plot, mo, scatter):
     chart = mo.ui.altair_chart(scatter(embedding_plot))
     chart
     return (chart,)
-
-
-@app.cell
-def _(mo):
-    mo.md("""# Bible Q&A""")
-    return
-
-
-@app.cell
-def _(mo):
-    mo.md("""This app lets you talk to the bible.""")
-    return
-
-
-@app.cell
-def _(mo):
-    mo.accordion({
-        "How is this app implemented?": """
-        - The bible is tokenized into chunks, which are embedded using
-        Jina's `jina-embeddings-v3`.
-        - Your question is embedded using the same model.
-        - We use an approximate k-nearest neighbor search on the PDF embeddings to
-        retrieve relevant chunks.
-        - The most relevant chunks are added to the context of your prompt, which
-        is processed by a GPT model.
-        """
-    })
-    return
-
-
-@app.cell
-def _():
-    '''
-    pdf = mo.ui.file(
-        label="Upload PDF", filetypes=[".pdf"], multiple=False, kind="area"
-    )
-    pdf
-
-
-    def parse_pdf():
-        if not pdf.value:
-            print("No PDF")
-            return None
-        if not pdf.value[0]:
-            print("No PDF")
-            return None
-
-        contents = pdf.value[0].contents
-        file = io.BytesIO(contents)
-        pdf_reader = PdfReader(file)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-
-        # split into chunks
-        text_splitter = CharacterTextSplitter(
-            separator="\n", chunk_size=1000, chunk_overlap=200, length_function=len
-        )
-        chunks = text_splitter.split_text(text)
-
-        # create embeddings
-        embeddings = OpenAIEmbeddings(openai_api_key=openaikey.value)
-        return FAISS.from_texts(chunks, embeddings)
-
-
-    knowledge_base = parse_pdf()
-    '''
-    return
 
 
 if __name__ == "__main__":
