@@ -16,4 +16,5 @@ dependencies = [
 	"langchain-ollama>=0.2.1",
 	"groq>=0.13.1",
 	"marimo>=0.10.7",
+	"playwright>=1.49.1",
 ]

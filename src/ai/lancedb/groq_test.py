@@ -4,9 +4,31 @@ __generated_with = "0.10.9"
 app = marimo.App(width="full")
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(mo):
-    mo.md(r"""# Embedding Visualizer""")
+    mo.md("""# Bible Q&A""")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""This app lets you talk to a bible and ask questions about it.""")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.accordion({
+        "How is this app implemented?": """
+        - Your Bible is tokenized into chunks, which are embedded using
+        jina embeddings
+        - Your question is embedded using the same model.
+        - We use an approximate k-nearest neighbor search on the PDF embeddings to
+        retrieve relevant chunks.
+        - The most relevant chunks are added to the context of your prompt, which
+        is processed by a GPT model.
+        """
+    })
     return
 
 
@@ -20,32 +42,183 @@ def _():
     load_dotenv(
         "/Users/gormery/Desktop/projects/bible/src/ai/lancedb/.env"
     )  # take environment variables from .env
-    return Groq, load_dotenv, mo, os
+
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY") if os.environ.get("GROQ_API_KEY") else mo.ui.text(label="🤖 Groq Key", kind="password")
+    JINA_API_KEY = os.environ.get("JINA_API_KEY") if os.environ.get("JINA_API_KEY") else mo.ui.text(label="🦾 Jina Key", kind="password")
+
+    config = mo.hstack([GROQ_API_KEY,JINA_API_KEY])
+    mo.accordion({"⚙️ Config -  here is all thats needed for the notebook to run and function correctly. both of these are FREE!! baby!!": config})
+    return GROQ_API_KEY, Groq, JINA_API_KEY, config, load_dotenv, mo, os
 
 
 @app.cell
-def _(Groq, os):
-    client = Groq(
-        # This is the default and can be omitted
-        api_key=os.environ.get("GROQ_API_KEY"),
-    )
+def _(Groq):
+    client = Groq() # uses the default api key in the environment
     return (client,)
 
 
 @app.cell
-def _(client):
-    chat_completion = client.chat.completions.create(
+def _(mo):
+    SYSTEM = """
+        You will recieve verses of the bible.
+        Answer the subsequent question using that context.
+        If you dont know just say you dont know
+    """
+    mo.md(
+        f"""
+        We set a system message to determine how our agent Model will behave.
+        
+        This is the system message:
+        **{SYSTEM}**
+        """
+    )
+    return (SYSTEM,)
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        f"""
+        ⚡️✨Test this chat below to see ✨⚡️
+        """
+    )
+    return
+
+
+@app.cell
+def _(BibleSchema, SYSTEM, bible_table, client, mo):
+    # Define the function to query the Bible table and Groq model
+    def bible_query_model(messages, config):
+        """
+        Custom RAG (Retrieval-Augmented Generation) model for querying the Bible.
+
+        Args:
+            messages (List[ChatMessage]): The chat history, including the user question.
+            config (ChatModelConfig): The configuration for the LLM.
+
+        Returns:
+            str: The LLM-generated response.
+        """
+        print(messages[0])
+        # Extract the latest user message
+        user_message = messages[-1].content
+
+        # Helper function to extract and sort context from LanceDB rows
+        def extract_context(rows):
+            return sorted(
+                [{"full_text": r.full_text, "verse_id": r.verse_id} for r in rows],
+                key=lambda x: x["verse_id"],
+            )
+
+        # Query the Bible table for context
+        rows = bible_table.search(user_message).limit(100).to_pydantic(BibleSchema)
+        context = extract_context(rows)
+
+        if not context:
+            return "No relevant context found in the database."
+
+        # Prepare the context and question for the Groq model
+        groq_messages = [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"Context: {context}"},
+            {"role": "user", "content": f"Question: {user_message}"},
+        ]
+
+        # Query the Groq model
+        response = client.chat.completions.create(
+            messages=groq_messages,
+            model="llama3-8b-8192",
+            stream=False,
+        )
+
+        # Stream and collect the response chunk by chunk
+        # print("**Groq Model Response:**\n")
+        # response_text = ""
+        # for chunk in stream:
+        #    if hasattr(chunk, "choices") and chunk.choices:
+        #        for choice in chunk.choices:
+        #            if choice.delta and choice.delta.content:
+        #                print(choice.delta.content, end="", flush=True)
+        #                response_text += choice.delta.content
+
+        return response.choices[0].message.content
+
+    # Configure the Marimo chat UI with the Bible query model
+    chat = mo.ui.chat(bible_query_model)
+
+    # Display the chat UI
+    chat
+
+    return bible_query_model, chat
+
+
+@app.cell
+def _(BibleSchema, SYSTEM, bible_table, client, mo, user_question):
+    mo.md(
+        f"""
+        We can also stream but i was not able to put it in marimo chat ui
+        """
+    )
+    if not user_question.value or not bible_table:
+        mo.md("No question provided or bible_table is empty.")
+
+    # Helper function to extract and sort context
+    def extract_context(rows):
+        """Extract and sort context from the database rows."""
+        return sorted(
+            [{"full_text": r.full_text, "verse_id": r.verse_id} for r in rows],
+            key=lambda x: x["verse_id"],
+        )
+
+    # Query the table for the context
+    rows = bible_table.search(user_question.value).limit(100).to_pydantic(BibleSchema)
+    context = extract_context(rows)
+
+    if not context:
+        mo.md("No relevant context found in the database.")
+
+    # Create a chat completion request with streaming enabled
+    stream = client.chat.completions.create(
         messages=[
-            {
-                "role": "user",
-                "content": "Explain the importance of low latency LLMs",
-            }
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"Context: {context}"},
+            {"role": "user", "content": f"Question: {user_question.value}"},
         ],
         model="llama3-8b-8192",
+        stream=True,  # Enable streaming
     )
-    llm_response = chat_completion.choices[0].message.content
-    llm_response
-    return chat_completion, llm_response
+
+    # Stream and collect the response chunk by chunk
+    print("**Groq Model Response:**\n")
+    response_text = ""
+    for chunk in stream:
+        if hasattr(chunk, "choices") and chunk.choices:
+            for choice in chunk.choices:
+                if choice.delta and choice.delta.content:
+                    print(choice.delta.content, end="", flush=True)
+                    response_text += choice.delta.content
+
+    print("\n\n**Response streaming complete.**")
+    mo.md(response_text)
+    return (
+        choice,
+        chunk,
+        context,
+        extract_context,
+        response_text,
+        rows,
+        stream,
+    )
+
+
+@app.cell
+def _(mo):
+    # Integration with Marimo UI
+    user_question = mo.ui.text_area(
+        placeholder="💬 Ask your question about the Bible..."
+    ).form()
+    user_question
+    return (user_question,)
 
 
 @app.cell
@@ -53,137 +226,158 @@ def _(os):
     import pandas as pd
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
+    from lancedb.embeddings import EmbeddingFunctionRegistry
+    from tqdm import tqdm
     import requests
-    import numpy as np
-    from sklearn.decomposition import PCA
-    import json
 
-    # Jina API setup
-    url = "https://api.jina.ai/v1/embeddings"
-    JINA_API_KEY = os.environ.get('JINA_API_KEY')
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {JINA_API_KEY}",
-    }
 
-    # Load Bible data with explicit column names, skipping the header row
-    bible_df = pd.read_csv(
-        "web.csv",
-        names=["Verse ID", "Book Name", "Book Number", "Chapter", "Verse", "Text"],
-        skiprows=1  # Skip the header row since column names are explicitly defined
-    )
+    # Initialize the Jina embedder through LanceDB
+    registry = EmbeddingFunctionRegistry.get_instance()
+    jina_embedder = registry.get("jina").create() # uses the api key in the environment
 
-    # Ensure correct data types
-    bible_df["Verse ID"] = bible_df["Verse ID"].astype(int)
-    bible_df["Book Number"] = bible_df["Book Number"].astype(int)
-    bible_df["Chapter"] = bible_df["Chapter"].astype(int)
-    bible_df["Verse"] = bible_df["Verse"].astype(int)
+    # Confirm embedding dimensions from Jina
+    EMBEDDING_DIM = jina_embedder.ndims()
+    print(f"Using embedding dimension: {EMBEDDING_DIM}")
 
-    # Create concatenated metadata text
-    bible_df["full_text"] = bible_df.apply(
-        lambda row: f"{row['Book Name']} {row['Chapter']}:{row['Verse']} - {row['Text']}",
-        axis=1
-    )
-
-    # LanceDB setup
-    db_path = "bible_lancedb"
-    db = lancedb.connect(db_path)
-
-    # Define LanceDB schema for embeddings
+    # Define schema for Bible embeddings
     class BibleSchema(LanceModel):
+        text: str = jina_embedder.SourceField()
+        embedding: Vector(EMBEDDING_DIM) = jina_embedder.VectorField()
         verse_id: int
         book_name: str
         chapter: int
         verse: int
-        text: str
         full_text: str
-        embedding: Vector(1024)  # Assuming 1024 dimensions from Jina model
 
-    # Create or open the LanceDB table
-    table = db.create_table("bible_embeddings", schema=BibleSchema, exist_ok=True)
+    # LanceDB setup
+    db_path = "bible_lancedb_bob"
+    db = lancedb.connect(db_path)
+    bible_table = db.create_table("bible_embeddings", schema=BibleSchema, exist_ok=True)
 
-    # Verify LanceDB contents
-    print(f"Initial rows in LanceDB: {len(table)}")
+    # Load Bible data
+    bible_df = pd.read_csv(
+        "web.csv",
+        names=["Verse ID", "Book Name", "Book Number", "Chapter", "Verse", "Text"],
+        skiprows=1,  # Skip the header row since column names are explicitly defined
+    )
 
-    # Function to get unembedded rows
-    def get_unembedded_rows(df, table):
-        # Extract existing IDs from LanceDB
-        existing_ids = {row.verse_id for row in table.to_pandas().itertuples()}
-        # Filter the DataFrame to exclude already embedded rows
-        return df[~df["Verse ID"].isin(existing_ids)]
+    # Ensure correct data types and add concatenated metadata text
+    bible_df["Verse ID"] = bible_df["Verse ID"].astype(int)
+    bible_df["Book Number"] = bible_df["Book Number"].astype(int)
+    bible_df["Chapter"] = bible_df["Chapter"].astype(int)
+    bible_df["Verse"] = bible_df["Verse"].astype(int)
+    bible_df["full_text"] = bible_df.apply(
+        lambda row: f"{row['Book Name']} {row['Chapter']}:{row['Verse']} - {row['Text']}",
+        axis=1,
+    )
 
-    # Dynamically fetch unembedded rows
-    unembedded_df = get_unembedded_rows(bible_df, table)
-    print(f"Unembedded rows to process: {len(unembedded_df)}")
+    # Log current database status
+    existing_rows = bible_table.to_pandas()
+    print(f"Total rows in the database: {len(existing_rows)}")
+    existing_ids = set(existing_rows["verse_id"])
+    print(f"Already embedded rows: {len(existing_ids)}")
 
-    # Optional limit for testing or controlled processing
-    limit = None  # Set to None to process all rows
-    if limit:
-        unembedded_df = unembedded_df[:limit]
+    # Determine unembedded rows
+    unembedded_bible_data = []
+    for _, row in tqdm(bible_df.iterrows(), total=len(bible_df), desc="Checking embedding status"):
+        if row["Verse ID"] not in existing_ids:
+            unembedded_bible_data.append(
+                {
+                    "text": str(row["Text"]),
+                    "verse_id": int(row["Verse ID"]),
+                    "book_name": str(row["Book Name"]),
+                    "chapter": int(row["Chapter"]),
+                    "verse": int(row["Verse"]),
+                    "full_text": str(row["full_text"]),
+                }
+            )
 
-    # Embedding loop with tracking
-    batch_size = 5
-    for i in range(0, len(unembedded_df), batch_size):
-        # Dynamically fetch unembedded rows for each batch
-        batch = unembedded_df.iloc[i : i + batch_size]
-        print(f"Processing batch {i} - {i + len(batch)} of {len(unembedded_df)}")
+    print(f"Unembedded rows to process: {len(unembedded_bible_data)}")
 
-        texts = batch["full_text"].tolist()
+    # Embed unembedded rows if there are any
+    if unembedded_bible_data:
+        print(f"Embedding {len(unembedded_bible_data)} new rows...")
+        for batch_start in tqdm(range(0, len(unembedded_bible_data), 100), desc="Embedding batches"):
+            batch = unembedded_bible_data[batch_start:batch_start + 100]
 
-        # Prepare API request payload
-        data = {
-            "model": "jina-embeddings-v3",
-            "task": "text-matching",
-            "late_chunking": False,
-            "dimensions": 1024,
-            "embedding_type": "float",
-            "input": texts,
-        }
+            # Prepare texts for embedding
+            texts = [row["full_text"] for row in batch]
+            try:
+                # Get embeddings from Jina
+                data = {"model": "jina-embeddings-v3", "task": "text-matching", "input": texts}
+                response = requests.post(
+                    "https://api.jina.ai/v1/embeddings",
+                    headers={"Authorization": f"Bearer {os.environ['JINA_API_KEY']}"},
+                    json=data,
+                )
+                if response.status_code != 200:
+                    print(f"Error: {response.status_code}, Response: {response.text}")
+                    continue
 
-        # Send request to Jina API
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code != 200:
-            print(f"Error: {response.status_code}, Response: {response.text}")
-            break
-        print(response.status_code, "-", json.loads(response.text)["usage"]["total_tokens"])
+                embeddings = response.json().get("data", [])
+                if len(embeddings) != len(batch):
+                    print(f"Embedding count mismatch. Expected {len(batch)}, got {len(embeddings)}")
+                    continue
 
-        # Parse embeddings
-        output = response.json().get("data", [])
-        embeddings = [entry["embedding"] for entry in output]
+                # Add embeddings to LanceDB
+                for idx, row in enumerate(batch):
+                    # Validate embedding dimensions
+                    embedding = embeddings[idx]["embedding"]
+                    if len(embedding) != EMBEDDING_DIM:
+                        print(f"Error embedding batch starting at index {batch_start}: Length of item not correct.")
+                        continue
 
-        # Check for response consistency
-        if len(embeddings) != len(batch):
-            print(f"Warning: Mismatched response. Expected {len(batch)}, got {len(embeddings)}")
-            continue  # Skip the batch
+                    row["embedding"] = [float(e) for e in embedding]
+                bible_table.add(batch)
 
-        # Prepare rows for LanceDB
-        rows = [
-            {
-                "verse_id": int(row["Verse ID"]),
-                "book_name": str(row["Book Name"]),
-                "chapter": int(row["Chapter"]),
-                "verse": int(row["Verse"]),
-                "text": str(row["Text"]),
-                "full_text": str(row["full_text"]),
-                "embedding": [float(e) for e in embeddings[idx]],
-            }
-            for idx, (_, row) in enumerate(batch.iterrows())
-        ]
+            except Exception as e:
+                print(f"Error embedding batch starting at index {batch_start}: {e}")
+    else:
+        print("No new rows to embed.")
 
-        # Insert embeddings into LanceDB if rows are valid
-        try:
-            table.add(rows)
-            print(f"Inserted {len(rows)} rows into LanceDB.")
-        except Exception as e:
-            print(f"Error inserting rows: {e}")
-            print("Skipping this batch...")
+    # Final database status
+    final_rows = bible_table.to_pandas()
+    print(f"Final rows in the database: {len(final_rows)}")
+    print(f"Newly embedded rows: {len(final_rows) - len(existing_rows)}")
+    return (
+        BibleSchema,
+        EMBEDDING_DIM,
+        EmbeddingFunctionRegistry,
+        LanceModel,
+        Vector,
+        batch,
+        batch_start,
+        bible_df,
+        bible_table,
+        data,
+        db,
+        db_path,
+        embedding,
+        embeddings,
+        existing_ids,
+        existing_rows,
+        final_rows,
+        idx,
+        jina_embedder,
+        lancedb,
+        pd,
+        registry,
+        requests,
+        response,
+        row,
+        texts,
+        tqdm,
+        unembedded_bible_data,
+    )
 
-    # Verify LanceDB contents
-    print(f"Total rows in LanceDB: {len(table)}")
 
+@app.cell
+def _(bible_table, pd):
+    import numpy as np
+    from sklearn.decomposition import PCA
 
     # Query LanceDB for embeddings
-    all_embeddings = np.array([row.embedding for row in table.to_pandas().itertuples()])
+    all_embeddings = np.array([row.embedding for row in bible_table.to_pandas().itertuples()])
     print(f"Embeddings shape: {all_embeddings.shape}")
 
     # PCA for dimensionality reduction
@@ -195,50 +389,17 @@ def _(os):
         {
             "x": pca_result[:, 0],
             "y": pca_result[:, 1],
-            "full_text": [row.full_text for row in table.to_pandas().itertuples()],
+            "full_text": [row.full_text for row in bible_table.to_pandas().itertuples()],
         }
     )
     embedding_plot
-    return (
-        BibleSchema,
-        JINA_API_KEY,
-        LanceModel,
-        PCA,
-        Vector,
-        all_embeddings,
-        batch,
-        batch_size,
-        bible_df,
-        data,
-        db,
-        db_path,
-        embedding_plot,
-        embeddings,
-        get_unembedded_rows,
-        headers,
-        i,
-        json,
-        lancedb,
-        limit,
-        np,
-        output,
-        pca,
-        pca_result,
-        pd,
-        requests,
-        response,
-        rows,
-        table,
-        texts,
-        unembedded_df,
-        url,
-    )
+    return PCA, all_embeddings, embedding_plot, np, pca, pca_result
 
 
 @app.cell
-def _(mo, table):
+def _(bible_table, mo):
     # Fetch all data from LanceDB and convert to a DataFrame
-    db_data = table.to_pandas()
+    db_data = bible_table.to_pandas()
     mo.md(f"**Total Rows in LanceDB: {len(db_data)}**")
     mo.ui.table(db_data)
     return (db_data,)
@@ -299,6 +460,74 @@ def _(embedding_plot, mo, scatter):
     chart = mo.ui.altair_chart(scatter(embedding_plot))
     chart
     return (chart,)
+
+
+@app.cell
+def _(mo):
+    mo.md("""# Bible Q&A""")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""This app lets you talk to the bible.""")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.accordion({
+        "How is this app implemented?": """
+        - The bible is tokenized into chunks, which are embedded using
+        Jina's `jina-embeddings-v3`.
+        - Your question is embedded using the same model.
+        - We use an approximate k-nearest neighbor search on the PDF embeddings to
+        retrieve relevant chunks.
+        - The most relevant chunks are added to the context of your prompt, which
+        is processed by a GPT model.
+        """
+    })
+    return
+
+
+@app.cell
+def _():
+    '''
+    pdf = mo.ui.file(
+        label="Upload PDF", filetypes=[".pdf"], multiple=False, kind="area"
+    )
+    pdf
+
+
+    def parse_pdf():
+        if not pdf.value:
+            print("No PDF")
+            return None
+        if not pdf.value[0]:
+            print("No PDF")
+            return None
+
+        contents = pdf.value[0].contents
+        file = io.BytesIO(contents)
+        pdf_reader = PdfReader(file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+
+        # split into chunks
+        text_splitter = CharacterTextSplitter(
+            separator="\n", chunk_size=1000, chunk_overlap=200, length_function=len
+        )
+        chunks = text_splitter.split_text(text)
+
+        # create embeddings
+        embeddings = OpenAIEmbeddings(openai_api_key=openaikey.value)
+        return FAISS.from_texts(chunks, embeddings)
+
+
+    knowledge_base = parse_pdf()
+    '''
+    return
 
 
 if __name__ == "__main__":
