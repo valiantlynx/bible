@@ -56,6 +56,15 @@ def _(os):
     import requests
     import numpy as np
     from sklearn.decomposition import PCA
+    import json
+
+    # Jina API setup
+    url = "https://api.jina.ai/v1/embeddings"
+    JINA_API_KEY = os.environ.get('JINA_API_KEY')
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {JINA_API_KEY}",
+    }
 
     # Load Bible data with explicit column names, skipping the header row
     bible_df = pd.read_csv(
@@ -87,10 +96,14 @@ def _(os):
         chapter: int
         verse: int
         text: str
+        full_text: str
         embedding: Vector(1024)  # Assuming 1024 dimensions from Jina model
 
     # Create or open the LanceDB table
     table = db.create_table("bible_embeddings", schema=BibleSchema, exist_ok=True)
+
+    # Verify LanceDB contents
+    print(f"Initial rows in LanceDB: {len(table)}")
 
     # Function to get unembedded rows
     def get_unembedded_rows(df, table):
@@ -99,20 +112,22 @@ def _(os):
         # Filter the DataFrame to exclude already embedded rows
         return df[~df["Verse ID"].isin(existing_ids)]
 
-    # Filter unembedded rows
+    # Dynamically fetch unembedded rows
     unembedded_df = get_unembedded_rows(bible_df, table)
+    print(f"Unembedded rows to process: {len(unembedded_df)}")
 
-    # Jina API setup
-    url = "https://api.jina.ai/v1/embeddings"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ.get('JINA_API_KEY')}",
-    }
+    # Optional limit for testing or controlled processing
+    limit = None  # Set to None to process all rows
+    if limit:
+        unembedded_df = unembedded_df[:limit]
 
     # Embedding loop with tracking
     batch_size = 5
     for i in range(0, len(unembedded_df), batch_size):
+        # Dynamically fetch unembedded rows for each batch
         batch = unembedded_df.iloc[i : i + batch_size]
+        print(f"Processing batch {i} - {i + len(batch)} of {len(unembedded_df)}")
+
         texts = batch["full_text"].tolist()
 
         # Prepare API request payload
@@ -130,6 +145,7 @@ def _(os):
         if response.status_code != 200:
             print(f"Error: {response.status_code}, Response: {response.text}")
             break
+        print(response.status_code, "-", json.loads(response.text)["usage"]["total_tokens"])
 
         # Parse embeddings
         output = response.json().get("data", [])
@@ -138,32 +154,33 @@ def _(os):
         # Check for response consistency
         if len(embeddings) != len(batch):
             print(f"Warning: Mismatched response. Expected {len(batch)}, got {len(embeddings)}")
-            print(f"Batch texts: {texts}")
-            print(f"API response: {response.text}")
-            continue  # Skip this batch if there's a mismatch
+            continue  # Skip the batch
 
         # Prepare rows for LanceDB
         rows = [
             {
                 "verse_id": int(row["Verse ID"]),
-                "book_name": row["Book Name"],
+                "book_name": str(row["Book Name"]),
                 "chapter": int(row["Chapter"]),
                 "verse": int(row["Verse"]),
-                "text": row["Text"],
-                "embedding": embeddings[idx],
+                "text": str(row["Text"]),
+                "full_text": str(row["full_text"]),
+                "embedding": [float(e) for e in embeddings[idx]],
             }
-            for idx, (_, row) in enumerate(batch.iterrows())  # Use enumerate for explicit indexing
+            for idx, (_, row) in enumerate(batch.iterrows())
         ]
 
         # Insert embeddings into LanceDB if rows are valid
-        if rows:
+        try:
             table.add(rows)
             print(f"Inserted {len(rows)} rows into LanceDB.")
-        else:
-            print(f"No rows added for batch starting at index {i}.")
+        except Exception as e:
+            print(f"Error inserting rows: {e}")
+            print("Skipping this batch...")
 
     # Verify LanceDB contents
     print(f"Total rows in LanceDB: {len(table)}")
+
 
     # Query LanceDB for embeddings
     all_embeddings = np.array([row.embedding for row in table.to_pandas().itertuples()])
@@ -178,13 +195,13 @@ def _(os):
         {
             "x": pca_result[:, 0],
             "y": pca_result[:, 1],
-            "text": [row.text for row in table.to_pandas().itertuples()],
+            "full_text": [row.full_text for row in table.to_pandas().itertuples()],
         }
     )
     print(embedding_plot)
-
     return (
         BibleSchema,
+        JINA_API_KEY,
         LanceModel,
         PCA,
         Vector,
@@ -200,7 +217,9 @@ def _(os):
         get_unembedded_rows,
         headers,
         i,
+        json,
         lancedb,
+        limit,
         np,
         output,
         pca,
@@ -214,6 +233,15 @@ def _(os):
         unembedded_df,
         url,
     )
+
+
+@app.cell
+def _(mo, table):
+    # Fetch all data from LanceDB and convert to a DataFrame
+    db_data = table.to_pandas()
+    mo.md(f"**Total Rows in LanceDB: {len(db_data)}**")
+    mo.ui.table(db_data)
+    return (db_data,)
 
 
 @app.cell
@@ -291,7 +319,7 @@ def _(alt):
             .encode(
                 x=alt.X("x:Q").scale(domain=(-2.5, 2.5)),
                 y=alt.Y("y:Q").scale(domain=(-2.5, 2.5)),
-                color=alt.Color("text:N"),
+                color=alt.Color("full_text:N"),
             )
             .properties(width=500, height=500)
         )
