@@ -1,7 +1,7 @@
 import marimo
 
-__generated_with = "0.10.7"
-app = marimo.App(width="medium")
+__generated_with = "0.10.9"
+app = marimo.App(width="full")
 
 
 @app.cell
@@ -91,7 +91,10 @@ def _(ChatOllama, Groq, OllamaEmbeddings, os):
     # Initialize models for multiple services
     model_ollama = ChatOllama(model="gemma2:2b")
     embeddings_ollama = OllamaEmbeddings(model="mxbai-embed-large")
-    groq_client = Groq(api_key=os.environ.get("groq api key"))
+    groq_client = Groq(
+        # This is the default and can be omitted
+        api_key=os.environ.get("GROQ_API_KEY"),
+    )
     return embeddings_ollama, groq_client, model_ollama
 
 
@@ -173,7 +176,6 @@ def _(GROQ_CONTEXT_LIMIT):
                 return response.choices[0].message.content
             except Exception as e:
                 raise RuntimeError(f"Groq API Error: {e}")
-
     return (GroqModelWrapper,)
 
 
@@ -212,7 +214,6 @@ def _(CSVLoader, marimo, tempfile):
         except Exception as e:
             marimo.Error(f"Error processing CSV file: {e}")
             return []
-
     return (process_csv_with_loader,)
 
 
