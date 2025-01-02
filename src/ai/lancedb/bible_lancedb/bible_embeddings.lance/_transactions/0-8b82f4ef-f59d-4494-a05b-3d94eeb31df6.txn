@@ -1,1 +1,0 @@
-$8b82f4ef-f59d-4494-a05b-3d94eeb31df6²À'verse_id ÿÿÿÿÿÿÿÿÿ*int648Zdefault+	book_name ÿÿÿÿÿÿÿÿÿ*string8Zdefault(chapter ÿÿÿÿÿÿÿÿÿ*int648Zdefault&verse ÿÿÿÿÿÿÿÿÿ*int648Zdefault&text ÿÿÿÿÿÿÿÿÿ*string8Zdefault+	full_text ÿÿÿÿÿÿÿÿÿ*string8ZdefaultA	embedding ÿÿÿÿÿÿÿÿÿ*fixed_size_list:float:102408Zdefault
